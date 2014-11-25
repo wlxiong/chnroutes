@@ -69,29 +69,60 @@ def generate_mac(metric):
     upscript_header=textwrap.dedent("""\
     #!/bin/sh
     export PATH="/bin:/sbin:/usr/sbin:/usr/bin"
-    
-    OLDGW=`netstat -nr | grep '^default' | grep -v 'ppp' | sed 's/default *\\([0-9\.]*\\) .*/\\1/' | awk '{if($1){print $1}}'`
 
-    if [ ! -e /tmp/pptp_oldgw ]; then
-        echo "${OLDGW}" > /tmp/pptp_oldgw
+    NEWGW="$(cat /tmp/pptp_newgw 2> /dev/null)"
+    if [ -z "$NEWGW" ]; then
+        exit 0
     fi
-    
+
+    echo "$NEWGW" > /tmp/pptp_oldgw
+
+    function lookup() {
+        local host=$1
+        dig +short $host | grep -Eo '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}'
+    }
+
+    function bypass() {
+        local host=$1
+        echo "$(lookup $host)" | while read addr;
+        do
+            local subnet="$addr/32"
+            route add $subnet "${NEWGW}"
+            echo "$subnet" >> /tmp/pptp_bypass
+        done
+    }
+
     dscacheutil -flushcache
 
-    route add 10.0.0.0/8 "${OLDGW}"
-    route add 172.16.0.0/12 "${OLDGW}"
-    route add 192.168.0.0/16 "${OLDGW}"
+    if [ -e /etc/ppp/bypass ]; then
+        cat /dev/null > /tmp/pptp_bypass
+        cat /etc/ppp/bypass | while read host;
+        do
+            bypass $host
+        done
+    fi
+
+    route delete 10.0.0.0/8
+    route delete 172.16.0.0/12
+    route delete 192.168.0.0/16
+    route add 10.0.0.0/8 "${NEWGW}"
+    route add 172.16.0.0/12 "${NEWGW}"
+    route add 192.168.0.0/16 "${NEWGW}"
     """)
     
     downscript_header=textwrap.dedent("""\
     #!/bin/sh
     export PATH="/bin:/sbin:/usr/sbin:/usr/bin"
-    
-    if [ ! -e /tmp/pptp_oldgw ]; then
-            exit 0
+
+    OLDGW="$(cat /tmp/pptp_oldgw 2> /dev/null)"
+
+    if [ -e /tmp/pptp_bypass ]; then
+        cat /tmp/pptp_bypass | while read subnet;
+        do
+            route delete $subnet "${OLDGW}"
+        done
+        rm -f /tmp/pptp_bypass
     fi
-    
-    ODLGW=`cat /tmp/pptp_oldgw`
 
     route delete 10.0.0.0/8 "${OLDGW}"
     route delete 172.16.0.0/12 "${OLDGW}"
@@ -107,10 +138,9 @@ def generate_mac(metric):
     downfile.write('\n')
     
     for ip,_,mask in results:
-        upfile.write('route add %s/%s "${OLDGW}"\n'%(ip,mask))
+        upfile.write('route add %s/%s "${NEWGW}"\n'%(ip,mask))
         downfile.write('route delete %s/%s ${OLDGW}\n'%(ip,mask))
     
-    downfile.write('\n\nrm /tmp/pptp_oldgw\n')
     upfile.close()
     downfile.close()
     
