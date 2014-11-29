@@ -6,6 +6,8 @@ import sys
 import argparse
 import math
 import textwrap
+import socket
+import struct
 
 
 def generate_ovpn(metric):
@@ -200,31 +202,29 @@ def fetch_ip_data():
     cnregex=re.compile(r'apnic\|cn\|ipv4\|[0-9\.]+\|[0-9]+\|[0-9]+\|a.*',re.IGNORECASE)
     cndata=cnregex.findall(data)
     
-    results=[]
+    atoi = lambda a: socket.ntohl(struct.unpack('I', socket.inet_aton(a))[0])
+    itoa = lambda i: socket.inet_ntoa(struct.pack("I", socket.htonl(i)))
+    subnets = [(fields[3], int(fields[4])) for fields in map(lambda x: str.split(x, '|'), cndata)]
+    results = []
+    addr_int = 0
+    addr_num = 0
+    for starting_ip, num_ip in sorted(subnets):
+        max_num = addr_int & -addr_int
+        if addr_num + num_ip <= max_num and \
+           atoi(starting_ip) == addr_int + addr_num:
+            addr_num += num_ip
+        else:
+            while addr_num:
+                addr = itoa(addr_int)
+                numb = addr_num & -addr_num
+                dots = itoa(0xffffffff ^ (numb - 1))
+                bits = 32 - int(math.log(numb, 2))
+                addr_num -= numb
+                addr_int += numb
+                results.append((addr, dots, bits))
+            addr_int = atoi(starting_ip)
+            addr_num = num_ip
 
-    for item in cndata:
-        unit_items=item.split('|')
-        starting_ip=unit_items[3]
-        num_ip=int(unit_items[4])
-        
-        imask=0xffffffff^(num_ip-1)
-        #convert to string
-        imask=hex(imask)[2:]
-        mask=[0]*4
-        mask[0]=imask[0:2]
-        mask[1]=imask[2:4]
-        mask[2]=imask[4:6]
-        mask[3]=imask[6:8]
-        
-        #convert str to int
-        mask=[ int(i,16 ) for i in mask]
-        mask="%d.%d.%d.%d"%tuple(mask)
-        
-        #mask in *nix format
-        mask2=32-int(math.log(num_ip,2))
-        
-        results.append((starting_ip,mask,mask2))
-         
     return results
 
 
